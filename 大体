@@ -1,0 +1,2163 @@
+#define _CRT_SECURE_NO_WARNINGS
+
+#include <stdio.h>
+
+#include <stdlib.h>
+
+#include <string.h>
+
+#include <limits.h>
+
+#include <ctype.h>
+
+
+/* =========================================================
+
+ *  外卖管理系统（整合版）
+
+ *  - 基于 AI 版扩展 admin / 地图 / Dijkstra
+
+ *  - 加入密码强度校验
+
+ *  - 跨平台：不调用 system("cls") / system("pause")
+
+ *  - 输入容错：scanf 失败时清空缓冲区
+
+ * ========================================================= */
+
+
+#define NAME_LEN 32
+
+#define MAX_MENU 5
+
+#define MAX_NODE 20
+
+#define INF 99999
+
+
+typedef enum {
+
+    ROLE_NONE = 0, ROLE_USER, ROLE_BUSINESS, ROLE_RIDER, ROLE_ADMIN
+
+} Role;
+
+
+/* ============== 数据结构 ============== */
+
+struct admin {
+
+    char username[NAME_LEN];
+
+    char password[NAME_LEN];
+
+    struct admin* next;
+
+};
+
+struct user {
+
+    char username[NAME_LEN];
+
+    char password[NAME_LEN];
+
+    char address[NAME_LEN];
+
+    struct user* next;
+
+};
+
+struct business {
+
+    int  id;
+
+    char password[NAME_LEN];
+
+    char name[NAME_LEN];
+
+    int  dish_count;
+
+    char menu[MAX_MENU][NAME_LEN];
+
+    int  price[MAX_MENU];
+
+    char location[NAME_LEN];
+
+    struct business* next;
+
+};
+
+struct rider {
+
+    int  id;
+
+    char password[NAME_LEN];
+
+    char name[NAME_LEN];
+
+    char phone[NAME_LEN];
+
+    char area[NAME_LEN];
+
+    int  busy;
+
+    int  task_count;
+
+    struct rider* next;
+
+};
+
+struct order {
+
+    int  id;
+
+    int  price;
+
+    char dish[NAME_LEN];
+
+    int  business_id;
+
+    int  rider_id;
+
+    char user[NAME_LEN];
+
+    char sp[NAME_LEN];
+
+    char ep[NAME_LEN];
+
+    char route[200];
+
+    int  distance;
+
+    int  finished;
+
+    struct order* next;
+
+};
+
+struct map {
+
+    int  node_count;
+
+    char nodes[MAX_NODE][NAME_LEN];
+
+    int  dist[MAX_NODE][MAX_NODE];
+
+    int  loaded;
+
+};
+
+
+/* ============== 工具函数 ============== */
+
+static void clear_stdin(void) {
+
+    /* 只吃掉一个残留换行，避免误吞下一行输入 */
+
+    int c = getchar();
+
+    if (c != '\n' && c != EOF) ungetc(c, stdin);
+
+}
+
+
+static void pause_any_key(void) {
+
+    printf("\n(按回车继续...)");
+
+    fflush(stdout);
+
+    clear_stdin();
+
+}
+
+
+static int pwd_strength_ok(const char* pwd) {
+
+    if (!pwd || !pwd[0]) return 0;
+
+    int hasLetter = 0, hasDigit = 0, hasSymbol = 0;
+
+    for (int i = 0; pwd[i]; i++) {
+
+        unsigned char c = (unsigned char)pwd[i];
+
+        if (isalpha(c))      hasLetter = 1;
+
+        else if (isdigit(c)) hasDigit = 1;
+
+        else                 hasSymbol = 1;
+
+    }
+
+    /* 至少 2 类 */
+
+    return (hasLetter + hasDigit + hasSymbol) >= 2;
+
+}
+
+
+/* 从 stdin 读一行（吃掉行尾换行） */
+
+static void read_line(char* buf, int n) {
+
+    if (!buf || n <= 0) return;
+
+    if (!fgets(buf, n, stdin)) { buf[0] = '\0'; return; }
+
+    int len = (int)strlen(buf);
+
+    while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) {
+
+        buf[--len] = '\0';
+
+    }
+
+}
+
+
+/* 读一行非空内容，吞掉 scanf 残留的 \n */
+
+static void read_token(char* buf, int n) {
+
+    do {
+
+        read_line(buf, n);
+
+    } while (buf[0] == '\0' && !feof(stdin));
+
+}
+
+
+/* ============== 前向声明 ============== */
+
+void admin_create(struct admin** head);
+
+struct admin* admin_register(struct admin* h);
+
+struct admin* admin_login(struct admin* h, struct admin** c);
+
+void admin_change_password(struct admin* h, const char* u);
+
+struct admin* admin_delete(struct admin* h, const char* u);
+
+struct admin* admin_search(struct admin* h, const char* u);
+
+void admin_print(struct admin* h);
+
+void admin_save(struct admin* h);
+
+void admin_free(struct admin* h);
+
+
+void user_create(struct user** h);
+
+struct user* user_register(struct user* h);
+
+struct user* user_login(struct user* h, struct user** c);
+
+void user_change_password(struct user* h, const char* u);
+
+void user_change_address(struct user* h, const char* u);
+
+struct user* user_delete(struct user* h, const char* u);
+
+struct user* user_search(struct user* h, const char* u);
+
+void user_print(struct user* h);
+
+void user_save(struct user* h);
+
+void user_free(struct user* h);
+
+
+void business_create(struct business** h);
+
+struct business* business_register(struct business* h);
+
+struct business* business_login(struct business* h, struct business** c);
+
+void business_change_password(struct business* h, int id);
+
+void business_change_dish(struct business* h, int id);
+
+struct business* business_delete(struct business* h, int id);
+
+struct business* business_search(struct business* h, int id);
+
+void business_print(struct business* h);
+
+void business_save(struct business* h);
+
+void business_free(struct business* h);
+
+
+void rider_create(struct rider** h);
+
+struct rider* rider_register(struct rider* h);
+
+struct rider* rider_login(struct rider* h, struct rider** c);
+
+void rider_change_password(struct rider* h, int id);
+
+struct rider* rider_delete(struct rider* h, int id);
+
+struct rider* rider_search(struct rider* h, int id);
+
+void rider_print(struct rider* h);
+
+void rider_save(struct rider* h);
+
+void rider_free(struct rider* h);
+
+
+void order_create(struct order** h);
+
+void order_save(struct order* h);
+
+void order_free(struct order* h);
+
+struct order* order_search(struct order* h, int id);
+
+void order_print_all(struct order* h);
+
+void order_print_by_user(struct order* h, const char* u);
+
+void order_print_by_business(struct order* h, int bid);
+
+void order_print_by_rider(struct order* h, int rid);
+
+struct order* order_delete(struct order* h, int id);
+
+void order_finish(struct order* h, int id, struct rider* r);
+
+struct order* order_place(struct order* o, struct user* u,
+
+    struct business* b, struct rider* r);
+
+int dispatch(struct order* o, struct rider* r);
+
+
+void map_init(struct map* m);
+
+int  map_add_node(struct map* m, const char* name);
+
+int  map_del_node(struct map* m, const char* name);
+
+int  map_add_edge(struct map* m, const char* a, const char* b, int d);
+
+int  map_del_edge(struct map* m, const char* a, const char* b);
+
+int  map_find_node(struct map* m, const char* name);
+
+void map_print(struct map* m);
+
+int  map_dijkstra(struct map* m, const char* src, const char* dst,
+
+    char* path_out, int path_size, int* dist_out);
+
+void map_save(struct map* m);
+
+void map_load(struct map* m);
+
+
+/* ============== 全局 ============== */
+
+static Role g_role = ROLE_NONE;
+
+static struct user* g_user = NULL;
+
+static struct business* g_business = NULL;
+
+static struct rider* g_rider = NULL;
+
+static struct admin* g_admin = NULL;
+
+static struct map       g_map;
+
+
+/* ============== main ============== */
+
+int main(void) {
+
+    struct order* ohead = NULL;
+
+    struct user* uhead = NULL;
+
+    struct business* bhead = NULL;
+
+    struct rider* rhead = NULL;
+
+    struct admin* ahead = NULL;
+
+
+    map_init(&g_map);
+
+    map_load(&g_map);
+
+
+    order_create(&ohead);
+
+    user_create(&uhead);
+
+    business_create(&bhead);
+
+    rider_create(&rhead);
+
+    admin_create(&ahead);
+
+
+    if (!ahead) {
+
+        printf("\n[系统首次使用，请创建第一个管理员账号]\n");
+
+        g_role = ROLE_ADMIN;   /* 需保证后续检查跳过 */
+
+    }
+
+
+    while (1) {
+
+        /* 首次使用：强制创建管理员 */
+
+        if (!ahead) {
+
+            printf("\n[系统首次使用，请创建第一个管理员账号]\n");
+
+            printf("管理员用户名：");
+
+            char first_user[NAME_LEN], first_pwd[NAME_LEN];
+
+            read_token(first_user, NAME_LEN);
+
+            printf("密码：");
+
+            read_token(first_pwd, NAME_LEN);
+
+            struct admin* p = (struct admin*)malloc(sizeof(struct admin));
+
+            if (!p) return 1;
+
+            strcpy(p->username, first_user);
+
+            strcpy(p->password, first_pwd);
+
+            p->next = NULL;
+
+            if (!pwd_strength_ok(p->password)) {
+
+                printf("密码强度不足\n"); free(p); return 1;
+
+            }
+
+            ahead = p;
+
+            printf("管理员创建成功（退出时写入文件）\n");
+
+            continue;
+
+        }
+
+
+        printf("\n========== 外卖管理系统 ==========\n");
+
+        printf("当前登录: ");
+
+        switch (g_role) {
+
+        case ROLE_USER:     printf("用户 %s\n", g_user ? g_user->username : "?"); break;
+
+        case ROLE_BUSINESS: printf("商家 %s\n", g_business ? g_business->name : "?"); break;
+
+        case ROLE_RIDER:    printf("骑手 %s\n", g_rider ? g_rider->name : "?"); break;
+
+        case ROLE_ADMIN:    printf("管理员 %s\n", g_admin ? g_admin->username : "?"); break;
+
+        default:            printf("未登录\n"); break;
+
+        }
+
+        printf("----------------------------------\n");
+
+        printf("0.退出（保存 6 个文件）\n");
+
+        printf("1.用户注册  2.商家注册  3.骑手注册  8.管理员注册\n");
+
+        printf("4.用户登录  5.商家登录  6.骑手登录  7.管理员登录\n");
+
+
+        if (g_role == ROLE_USER) {
+
+            printf("---- [用户] ----\n");
+
+            printf("u1.点菜下单  u2.我的订单  u3.改密码  u4.改地址  u5.注销\n");
+
+        }
+        else if (g_role == ROLE_BUSINESS) {
+
+            printf("---- [商家] ----\n");
+
+            printf("b1.本店订单  b2.改菜单  b3.改密码  b4.注销\n");
+
+        }
+        else if (g_role == ROLE_RIDER) {
+
+            printf("---- [骑手] ----\n");
+
+            printf("r1.我的订单  r2.完成订单  r3.改密码  r4.注销\n");
+
+        }
+        else if (g_role == ROLE_ADMIN) {
+
+            printf("---- [管理员·账户] ----\n");
+
+            printf("a1.查看用户  a2.查看商家  a3.查看骑手  a4.查看订单  a5.查看管理员\n");
+
+            printf("a6.新增管理员  a7.删用户  a8.删商家  a9.删骑手  a10.删订单\n");
+
+            printf("a11.删管理员  a12.改自己密码  a13.退出登录\n");
+
+            printf("---- [管理员·地图] ----\n");
+
+            printf("m1.查看地图  m2.添加节点  m3.删除节点  m4.添加路线  m5.删除路线\n");
+
+            printf("m6.测最短路径  m7.保存地图  m8.重新加载地图\n");
+
+        }
+
+
+        printf("请选择：");
+
+        char cmd[8];
+
+        if (scanf("%7s", cmd) != 1) { clear_stdin(); continue; }
+
+
+        if (strcmp(cmd, "0") == 0) {
+
+            order_save(ohead);
+
+            user_save(uhead);
+
+            business_save(bhead);
+
+            rider_save(rhead);
+
+            admin_save(ahead);
+
+            map_save(&g_map);
+
+            order_free(ohead);
+
+            user_free(uhead);
+
+            business_free(bhead);
+
+            rider_free(rhead);
+
+            admin_free(ahead);
+
+            printf("已退出系统（6 个文件已保存）\n");
+
+            return 0;
+
+        }
+
+        else if (strcmp(cmd, "1") == 0) uhead = user_register(uhead);
+
+        else if (strcmp(cmd, "2") == 0) bhead = business_register(bhead);
+
+        else if (strcmp(cmd, "3") == 0) rhead = rider_register(rhead);
+
+        else if (strcmp(cmd, "8") == 0) { clear_stdin(); ahead = admin_register(ahead); }
+
+        else if (strcmp(cmd, "4") == 0) {
+
+            g_user = NULL; g_role = ROLE_NONE; clear_stdin();
+
+            user_login(uhead, &g_user);
+
+            if (g_user) g_role = ROLE_USER;
+
+        }
+
+        else if (strcmp(cmd, "5") == 0) {
+
+            g_business = NULL; g_role = ROLE_NONE; clear_stdin();
+
+            business_login(bhead, &g_business);
+
+            if (g_business) g_role = ROLE_BUSINESS;
+
+        }
+
+        else if (strcmp(cmd, "6") == 0) {
+
+            g_rider = NULL; g_role = ROLE_NONE; clear_stdin();
+
+            rider_login(rhead, &g_rider);
+
+            if (g_rider) g_role = ROLE_RIDER;
+
+        }
+
+        else if (strcmp(cmd, "7") == 0) {
+
+            g_admin = NULL; g_role = ROLE_NONE; clear_stdin();
+
+            admin_login(ahead, &g_admin);
+
+            if (g_admin) g_role = ROLE_ADMIN;
+
+        }
+
+        /* user */
+
+        else if (strcmp(cmd, "u1") == 0 && g_role == ROLE_USER)
+
+            ohead = order_place(ohead, g_user, bhead, rhead);
+
+        else if (strcmp(cmd, "u2") == 0 && g_role == ROLE_USER)
+
+            order_print_by_user(ohead, g_user->username);
+
+        else if (strcmp(cmd, "u3") == 0 && g_role == ROLE_USER)
+
+            user_change_password(uhead, g_user->username);
+
+        else if (strcmp(cmd, "u4") == 0 && g_role == ROLE_USER)
+
+            user_change_address(uhead, g_user->username);
+
+        else if (strcmp(cmd, "u5") == 0 && g_role == ROLE_USER) {
+
+            uhead = user_delete(uhead, g_user->username);
+
+            g_user = NULL; g_role = ROLE_NONE;
+
+        }
+
+        /* business */
+
+        else if (strcmp(cmd, "b1") == 0 && g_role == ROLE_BUSINESS)
+
+            order_print_by_business(ohead, g_business->id);
+
+        else if (strcmp(cmd, "b2") == 0 && g_role == ROLE_BUSINESS)
+
+            business_change_dish(bhead, g_business->id);
+
+        else if (strcmp(cmd, "b3") == 0 && g_role == ROLE_BUSINESS)
+
+            business_change_password(bhead, g_business->id);
+
+        else if (strcmp(cmd, "b4") == 0 && g_role == ROLE_BUSINESS) {
+
+            g_business = NULL; g_role = ROLE_NONE; printf("已注销\n");
+
+        }
+
+        /* rider */
+
+        else if (strcmp(cmd, "r1") == 0 && g_role == ROLE_RIDER)
+
+            order_print_by_rider(ohead, g_rider->id);
+
+        else if (strcmp(cmd, "r2") == 0 && g_role == ROLE_RIDER) {
+
+            int oid; printf("订单编号："); scanf("%d", &oid);
+
+            order_finish(ohead, oid, rhead);
+
+        }
+
+        else if (strcmp(cmd, "r3") == 0 && g_role == ROLE_RIDER)
+
+            rider_change_password(rhead, g_rider->id);
+
+        else if (strcmp(cmd, "r4") == 0 && g_role == ROLE_RIDER) {
+
+            g_rider = NULL; g_role = ROLE_NONE; printf("已注销\n");
+
+        }
+
+        /* admin */
+
+        else if (strcmp(cmd, "a1") == 0 && g_role == ROLE_ADMIN) user_print(uhead);
+
+        else if (strcmp(cmd, "a2") == 0 && g_role == ROLE_ADMIN) business_print(bhead);
+
+        else if (strcmp(cmd, "a3") == 0 && g_role == ROLE_ADMIN) rider_print(rhead);
+
+        else if (strcmp(cmd, "a4") == 0 && g_role == ROLE_ADMIN) order_print_all(ohead);
+
+        else if (strcmp(cmd, "a5") == 0 && g_role == ROLE_ADMIN) admin_print(ahead);
+
+        else if (strcmp(cmd, "a6") == 0 && g_role == ROLE_ADMIN)
+
+            ahead = admin_register(ahead);
+
+        else if (strcmp(cmd, "a7") == 0 && g_role == ROLE_ADMIN) {
+
+            char u[NAME_LEN]; printf("用户名："); scanf("%31s", u);
+
+            uhead = user_delete(uhead, u);
+
+        }
+
+        else if (strcmp(cmd, "a8") == 0 && g_role == ROLE_ADMIN) {
+
+            int id; printf("商家编号："); scanf("%d", &id);
+
+            bhead = business_delete(bhead, id);
+
+        }
+
+        else if (strcmp(cmd, "a9") == 0 && g_role == ROLE_ADMIN) {
+
+            int id; printf("骑手编号："); scanf("%d", &id);
+
+            rhead = rider_delete(rhead, id);
+
+        }
+
+        else if (strcmp(cmd, "a10") == 0 && g_role == ROLE_ADMIN) {
+
+            int id; printf("订单编号："); scanf("%d", &id);
+
+            ohead = order_delete(ohead, id);
+
+        }
+
+        else if (strcmp(cmd, "a11") == 0 && g_role == ROLE_ADMIN) {
+
+            char u[NAME_LEN]; printf("管理员："); scanf("%31s", u);
+
+            if (strcmp(u, g_admin->username) == 0) printf("不能删除自己\n");
+
+            else ahead = admin_delete(ahead, u);
+
+        }
+
+        else if (strcmp(cmd, "a12") == 0 && g_role == ROLE_ADMIN)
+
+            admin_change_password(ahead, g_admin->username);
+
+        else if (strcmp(cmd, "a13") == 0 && g_role == ROLE_ADMIN) {
+
+            g_admin = NULL; g_role = ROLE_NONE; printf("已退出登录\n");
+
+        }
+
+        /* map */
+
+        else if (strcmp(cmd, "m1") == 0 && g_role == ROLE_ADMIN) map_print(&g_map);
+
+        else if (strcmp(cmd, "m2") == 0 && g_role == ROLE_ADMIN) {
+
+            char n[NAME_LEN]; printf("节点："); scanf("%31s", n);
+
+            map_add_node(&g_map, n);
+
+        }
+
+        else if (strcmp(cmd, "m3") == 0 && g_role == ROLE_ADMIN) {
+
+            char n[NAME_LEN]; printf("节点："); scanf("%31s", n);
+
+            map_del_node(&g_map, n);
+
+        }
+
+        else if (strcmp(cmd, "m4") == 0 && g_role == ROLE_ADMIN) {
+
+            char a[NAME_LEN], b[NAME_LEN]; int d;
+
+            printf("起点 终点 距离："); scanf("%31s %31s %d", a, b, &d);
+
+            map_add_edge(&g_map, a, b, d);
+
+        }
+
+        else if (strcmp(cmd, "m5") == 0 && g_role == ROLE_ADMIN) {
+
+            char a[NAME_LEN], b[NAME_LEN];
+
+            printf("起点 终点："); scanf("%31s %31s", a, b);
+
+            map_del_edge(&g_map, a, b);
+
+        }
+
+        else if (strcmp(cmd, "m6") == 0 && g_role == ROLE_ADMIN) {
+
+            char s[NAME_LEN], t[NAME_LEN];
+
+            printf("起点 终点："); scanf("%31s %31s", s, t);
+
+            char path[200]; int dist = -1;
+
+            if (map_dijkstra(&g_map, s, t, path, sizeof(path), &dist) == 0)
+
+                printf("最短路径：%s  距离：%d\n", path, dist);
+
+            else printf("无法到达或节点不存在\n");
+
+        }
+
+        else if (strcmp(cmd, "m7") == 0 && g_role == ROLE_ADMIN) map_save(&g_map);
+
+        else if (strcmp(cmd, "m8") == 0 && g_role == ROLE_ADMIN) {
+
+            map_init(&g_map);
+
+            map_load(&g_map);
+
+        }
+
+        else printf("无效命令或权限不足\n");
+
+
+        /* 命令级停顿（任何分支都过） */
+
+        if (g_role != ROLE_NONE && cmd[0] != '0') {
+
+            /* 这里给"非主页"操作一个回车停顿，避免刷屏 */
+
+            /* 简单策略：登录/注册类不阻塞，其他都阻塞 */
+
+            int block = 1;
+
+            if (strcmp(cmd, "4") == 0 || strcmp(cmd, "5") == 0 || strcmp(cmd, "6") == 0 || strcmp(cmd, "7") == 0) block = 0;
+
+            if (block) pause_any_key();
+
+        }
+
+    }
+
+}
+
+
+/* =========================================================
+
+ *  管理员模块
+
+ * ========================================================= */
+
+void admin_create(struct admin** head) {
+
+    FILE* fp = fopen("admin_text.text", "r");
+
+    if (!fp) { *head = NULL; return; }
+
+    struct admin* rear = NULL, * p;
+
+    int n = 0;
+
+    while (1) {
+
+        p = (struct admin*)malloc(sizeof(struct admin));
+
+        if (!p) { fclose(fp); exit(1); }
+
+        if (fscanf(fp, "%31s %31s", p->username, p->password) != 2) {
+
+            free(p); break;
+
+        }
+
+        p->next = NULL;
+
+        if (!*head) *head = rear = p; else rear->next = p, rear = p;
+
+        n++;
+
+    }
+
+    fclose(fp);
+
+    if (n > 0) printf("[admin] 加载 %d 条管理员\n", n);
+
+}
+
+
+struct admin* admin_register(struct admin* h) {
+
+    struct admin* p = (struct admin*)malloc(sizeof(struct admin));
+
+    if (!p) return h;
+
+    printf("管理员用户名 密码：");
+
+    scanf("%31s %31s", p->username, p->password);
+
+    if (!pwd_strength_ok(p->password)) {
+
+        printf("密码强度不足（需包含字母/数字/符号中至少 2 类）\n");
+
+        free(p); return h;
+
+    }
+
+    for (struct admin* q = h; q; q = q->next)
+
+        if (strcmp(q->username, p->username) == 0) {
+
+            printf("管理员 [%s] 已存在\n", p->username);
+
+            free(p); return h;
+
+        }
+
+    p->next = NULL;
+
+    if (!h) h = p;
+
+    else { struct admin* r = h; while (r->next) r = r->next; r->next = p; }
+
+    printf("管理员创建成功（退出时写入 admin_text.text）\n");
+
+    return h;
+
+}
+
+
+struct admin* admin_login(struct admin* h, struct admin** c) {
+
+    char u[NAME_LEN], pw[NAME_LEN];
+
+    printf("管理员账号 密码："); scanf("%31s %31s", u, pw);
+
+    struct admin* p = admin_search(h, u);
+
+    if (!p) { printf("管理员不存在\n"); return h; }
+
+    if (strcmp(p->password, pw) != 0) { printf("密码错误\n"); return h; }
+
+    *c = p;
+
+    printf("登录成功，欢迎 %s\n", u);
+
+    return h;
+
+}
+
+
+void admin_change_password(struct admin* h, const char* u) {
+
+    struct admin* p = admin_search(h, u); if (!p) return;
+
+    char o[NAME_LEN], n[NAME_LEN];
+
+    printf("旧密码 新密码："); scanf("%31s %31s", o, n);
+
+    if (strcmp(p->password, o) != 0) { printf("旧密码错误\n"); return; }
+
+    if (!pwd_strength_ok(n)) {
+
+        printf("新密码强度不足\n"); return;
+
+    }
+
+    strcpy(p->password, n);
+
+    printf("密码已更新\n");
+
+}
+
+
+struct admin* admin_delete(struct admin* h, const char* u) {
+
+    struct admin* p = h, * pre = NULL;
+
+    while (p) {
+
+        if (strcmp(p->username, u) == 0) {
+
+            if (!pre) h = p->next; else pre->next = p->next;
+
+            free(p); printf("管理员 [%s] 已删除\n", u); return h;
+
+        }
+
+        pre = p; p = p->next;
+
+    }
+
+    printf("管理员不存在\n"); return h;
+
+}
+
+
+struct admin* admin_search(struct admin* h, const char* u) {
+
+    for (struct admin* p = h; p; p = p->next)
+
+        if (strcmp(p->username, u) == 0) return p;
+
+    return NULL;
+
+}
+
+
+void admin_print(struct admin* h) {
+
+    if (!h) { printf("无管理员\n"); return; }
+
+    printf("管理员账号\t密码\n");
+
+    for (struct admin* p = h; p; p = p->next)
+
+        printf("%s\t%s\n", p->username, p->password);
+
+}
+
+
+void admin_save(struct admin* h) {
+
+    FILE* fp = fopen("admin_text.text", "w");
+
+    if (!fp) { printf("管理员文件保存失败\n"); return; }
+
+    for (struct admin* p = h; p; p = p->next)
+
+        fprintf(fp, "%s %s\n", p->username, p->password);
+
+    fclose(fp);
+
+}
+
+
+void admin_free(struct admin* h) {
+
+    while (h) { struct admin* t = h; h = h->next; free(t); }
+
+}
+
+
+/* =========================================================
+
+ *  地图模块
+
+ * ========================================================= */
+
+void map_init(struct map* m) {
+
+    m->node_count = 0;
+
+    m->loaded = 0;
+
+    for (int i = 0; i < MAX_NODE; i++)
+
+        for (int j = 0; j < MAX_NODE; j++)
+
+            m->dist[i][j] = (i == j) ? 0 : INF;
+
+}
+
+int map_find_node(struct map* m, const char* name) {
+
+    for (int i = 0; i < m->node_count; i++)
+
+        if (strcmp(m->nodes[i], name) == 0) return i;
+
+    return -1;
+
+}
+
+int map_add_node(struct map* m, const char* name) {
+
+    if (m->node_count >= MAX_NODE) { printf("节点已满\n"); return -1; }
+
+    if (map_find_node(m, name) >= 0) { printf("节点 [%s] 已存在\n", name); return -1; }
+
+    int id = m->node_count++;
+
+    strcpy(m->nodes[id], name);
+
+    m->dist[id][id] = 0;
+
+    printf("已添加节点 [%s] 编号 %d\n", name, id);
+
+    return id;
+
+}
+
+int map_del_node(struct map* m, const char* name) {
+
+    int id = map_find_node(m, name);
+
+    if (id < 0) { printf("节点不存在\n"); return -1; }
+
+    int last = m->node_count - 1;
+
+    if (id != last) {
+
+        strcpy(m->nodes[id], m->nodes[last]);
+
+        for (int i = 0; i < m->node_count; i++) {
+
+            m->dist[id][i] = m->dist[last][i];
+
+            m->dist[i][id] = m->dist[i][last];
+
+        }
+
+    }
+
+    m->node_count--;
+
+    printf("已删除节点 [%s]\n", name);
+
+    return 0;
+
+}
+
+int map_add_edge(struct map* m, const char* a, const char* b, int d) {
+
+    int ia = map_find_node(m, a), ib = map_find_node(m, b);
+
+    if (ia < 0 || ib < 0) { printf("节点不存在\n"); return -1; }
+
+    if (d <= 0) { printf("距离必须 > 0\n"); return -1; }
+
+    m->dist[ia][ib] = m->dist[ib][ia] = d;
+
+    printf("已添加路线 %s <-> %s 距离 %d\n", a, b, d);
+
+    return 0;
+
+}
+
+int map_del_edge(struct map* m, const char* a, const char* b) {
+
+    int ia = map_find_node(m, a), ib = map_find_node(m, b);
+
+    if (ia < 0 || ib < 0) { printf("节点不存在\n"); return -1; }
+
+    m->dist[ia][ib] = m->dist[ib][ia] = INF;
+
+    printf("已删除路线 %s <-> %s\n", a, b);
+
+    return 0;
+
+}
+
+void map_print(struct map* m) {
+
+    if (m->node_count == 0) { printf("地图为空\n"); return; }
+
+    printf("\n--- 节点 ---\n");
+
+    for (int i = 0; i < m->node_count; i++)
+
+        printf("  %d: %s\n", i, m->nodes[i]);
+
+    printf("\n--- 邻接矩阵 ---\n    ");
+
+    for (int i = 0; i < m->node_count; i++) printf("%6s", m->nodes[i]);
+
+    printf("\n");
+
+    for (int i = 0; i < m->node_count; i++) {
+
+        printf("%4s", m->nodes[i]);
+
+        for (int j = 0; j < m->node_count; j++) {
+
+            if (m->dist[i][j] >= INF) printf("%6s", "INF");
+
+            else printf("%6d", m->dist[i][j]);
+
+        }
+
+        printf("\n");
+
+    }
+
+}
+
+int map_dijkstra(struct map* m, const char* src, const char* dst,
+
+    char* path_out, int path_size, int* dist_out)
+
+{
+
+    int s = map_find_node(m, src), t = map_find_node(m, dst);
+
+    if (s < 0 || t < 0) return -1;
+
+    int n = m->node_count;
+
+    int visited[MAX_NODE] = { 0 }, d[MAX_NODE], prev[MAX_NODE];
+
+    for (int i = 0; i < n; i++) { d[i] = m->dist[s][i]; prev[i] = -1; }
+
+    for (int k = 0; k < n; k++) {
+
+        int u = -1, min = INF;
+
+        for (int i = 0; i < n; i++)
+
+            if (!visited[i] && d[i] < min) { min = d[i]; u = i; }
+
+        if (u < 0) break;
+
+        visited[u] = 1;
+
+        for (int v = 0; v < n; v++) {
+
+            if (visited[v] || m->dist[u][v] >= INF) continue;
+
+            if (d[u] + m->dist[u][v] < d[v]) {
+
+                d[v] = d[u] + m->dist[u][v];
+
+                prev[v] = u;
+
+            }
+
+        }
+
+    }
+
+    if (d[t] >= INF) return -1;
+
+
+    /* 倒序拼路径，再翻过来 */
+
+    char rev[200] = "";
+
+    int cur = t;
+
+    while (cur != -1) {
+
+        char tmp[200];
+
+        if (rev[0] == '\0') strcpy(tmp, m->nodes[cur]);
+
+        else sprintf(tmp, "%s->%s", m->nodes[cur], rev);
+
+        strcpy(rev, tmp);
+
+        cur = prev[cur];
+
+    }
+
+    strncpy(path_out, rev, path_size - 1);
+
+    path_out[path_size - 1] = '\0';
+
+    *dist_out = d[t];
+
+    return 0;
+
+}
+
+void map_save(struct map* m) {
+
+    FILE* fp = fopen("map_text.text", "w");
+
+    if (!fp) return;
+
+    for (int i = 0; i < m->node_count; i++)
+
+        fprintf(fp, "NODE %s\n", m->nodes[i]);
+
+    for (int i = 0; i < m->node_count; i++)
+
+        for (int j = i + 1; j < m->node_count; j++)
+
+            if (m->dist[i][j] < INF)
+
+                fprintf(fp, "EDGE %s %s %d\n", m->nodes[i], m->nodes[j], m->dist[i][j]);
+
+    fclose(fp);
+
+    printf("[map_text.text] 保存成功\n");
+
+}
+
+void map_load(struct map* m) {
+
+    FILE* fp = fopen("map_text.text", "r");
+
+    if (!fp) { m->loaded = 0; return; }
+
+    map_init(m);
+
+    char line[256];
+
+    while (fgets(line, sizeof(line), fp)) {
+
+        char a[NAME_LEN], b[NAME_LEN]; int d;
+
+        if (sscanf(line, "NODE %31s", a) == 1) map_add_node(m, a);
+
+        else if (sscanf(line, "EDGE %31s %31s %d", a, b, &d) == 3) map_add_edge(m, a, b, d);
+
+    }
+
+    fclose(fp);
+
+    m->loaded = 1;
+
+}
+
+
+/* =========================================================
+
+ *  用户 / 商家 / 骑手 / 订单
+
+ * ========================================================= */
+
+void user_create(struct user** head) {
+
+    FILE* fp = fopen("user_text.text", "r"); if (!fp) { *head = NULL; return; }
+
+    struct user* rear = NULL, * p;
+
+    while (1) {
+
+        p = (struct user*)malloc(sizeof(struct user));
+
+        if (!p) { fclose(fp); exit(1); }
+
+        if (fscanf(fp, "%31s %31s %31s", p->username, p->password, p->address) != 3) {
+
+            free(p); break;
+
+        }
+
+        p->next = NULL;
+
+        if (!*head) *head = rear = p; else rear->next = p, rear = p;
+
+    }
+
+    fclose(fp);
+
+}
+
+struct user* user_register(struct user* h) {
+
+    struct user* p = (struct user*)malloc(sizeof(struct user));
+
+    if (!p) return h;
+
+    printf("用户名 密码 地址：");
+
+    scanf("%31s %31s %31s", p->username, p->password, p->address);
+
+    if (!pwd_strength_ok(p->password)) {
+
+        printf("密码强度不足（字母/数字/符号中至少 2 类）\n");
+
+        free(p); return h;
+
+    }
+
+    for (struct user* q = h; q; q = q->next)
+
+        if (strcmp(q->username, p->username) == 0) { printf("已存在\n"); free(p); return h; }
+
+    p->next = NULL;
+
+    if (!h) h = p; else { struct user* r = h; while (r->next) r = r->next; r->next = p; }
+
+    printf("注册成功\n"); return h;
+
+}
+
+struct user* user_login(struct user* h, struct user** c) {
+
+    char u[NAME_LEN], pw[NAME_LEN];
+
+    printf("账号 密码："); scanf("%31s %31s", u, pw);
+
+    struct user* p = user_search(h, u);
+
+    if (!p) { printf("不存在\n"); return h; }
+
+    if (strcmp(p->password, pw) != 0) { printf("密码错误\n"); return h; }
+
+    *c = p; printf("登录成功\n"); return h;
+
+}
+
+void user_change_password(struct user* h, const char* u) {
+
+    struct user* p = user_search(h, u); if (!p) return;
+
+    char o[NAME_LEN], n[NAME_LEN];
+
+    printf("旧 新："); scanf("%31s %31s", o, n);
+
+    if (strcmp(p->password, o) != 0) { printf("旧密码错误\n"); return; }
+
+    if (!pwd_strength_ok(n)) { printf("新密码强度不足\n"); return; }
+
+    strcpy(p->password, n);
+
+}
+
+void user_change_address(struct user* h, const char* u) {
+
+    struct user* p = user_search(h, u); if (!p) return;
+
+    printf("新地址："); scanf("%31s", p->address);
+
+}
+
+struct user* user_delete(struct user* h, const char* u) {
+
+    struct user* p = h, * pre = NULL;
+
+    while (p) {
+
+        if (strcmp(p->username, u) == 0) {
+
+            if (!pre) h = p->next; else pre->next = p->next;
+
+            free(p); printf("已删\n"); return h;
+
+        }
+
+        pre = p; p = p->next;
+
+    }
+
+    printf("不存在\n"); return h;
+
+}
+
+struct user* user_search(struct user* h, const char* u) {
+
+    for (struct user* p = h; p; p = p->next)
+
+        if (strcmp(p->username, u) == 0) return p;
+
+    return NULL;
+
+}
+
+void user_print(struct user* h) {
+
+    if (!h) { printf("无\n"); return; }
+
+    for (struct user* p = h; p; p = p->next)
+
+        printf("%s\t%s\t%s\n", p->username, p->password, p->address);
+
+}
+
+void user_save(struct user* h) {
+
+    FILE* fp = fopen("user_text.text", "w"); if (!fp) return;
+
+    for (struct user* p = h; p; p = p->next)
+
+        fprintf(fp, "%s %s %s\n", p->username, p->password, p->address);
+
+    fclose(fp);
+
+}
+
+void user_free(struct user* h) {
+
+    while (h) { struct user* t = h; h = h->next; free(t); }
+
+}
+
+
+void business_create(struct business** h) {
+
+    FILE* fp = fopen("business_text.text", "r"); if (!fp) { *h = NULL; return; }
+
+    struct business* rear = NULL, * p;
+
+    while (1) {
+
+        p = (struct business*)malloc(sizeof(struct business));
+
+        if (!p) { fclose(fp); exit(1); }
+
+        if (fscanf(fp, "%d %31s %31s %31s %d",
+
+            &p->id, p->password, p->name, p->location, &p->dish_count) != 5) {
+
+            free(p); break;
+
+        }
+
+        int i;
+
+        for (i = 0; i < p->dish_count; i++)
+
+            if (fscanf(fp, " %31s %d", p->menu[i], &p->price[i]) != 2) break;
+
+        if (i < p->dish_count) { free(p); break; }
+
+        p->next = NULL;
+
+        if (!*h) *h = rear = p; else rear->next = p, rear = p;
+
+    }
+
+    fclose(fp);
+
+}
+
+struct business* business_register(struct business* h) {
+
+    struct business* p = (struct business*)malloc(sizeof(struct business));
+
+    if (!p) return h;
+
+    printf("编号 店名 位置 密码：");
+
+    scanf("%d %31s %31s %31s", &p->id, p->name, p->location, p->password);
+
+    for (struct business* q = h; q; q = q->next)
+
+        if (q->id == p->id) { printf("编号已存在\n"); free(p); return h; }
+
+    if (!pwd_strength_ok(p->password)) {
+
+        printf("密码强度不足\n"); free(p); return h;
+
+    }
+
+    printf("菜品数(1~%d)：", MAX_MENU); scanf("%d", &p->dish_count);
+
+    if (p->dish_count < 1 || p->dish_count > MAX_MENU) { printf("非法\n"); free(p); return h; }
+
+    for (int i = 0; i < p->dish_count; i++) {
+
+        printf("第%d道 菜名 价格：", i + 1);
+
+        scanf("%31s %d", p->menu[i], &p->price[i]);
+
+    }
+
+    p->next = NULL;
+
+    if (!h) h = p; else { struct business* r = h; while (r->next) r = r->next; r->next = p; }
+
+    printf("注册成功\n"); return h;
+
+}
+
+struct business* business_login(struct business* h, struct business** c) {
+
+    int id; char pw[NAME_LEN];
+
+    printf("编号 密码："); scanf("%d %31s", &id, pw);
+
+    struct business* p = business_search(h, id);
+
+    if (!p) { printf("不存在\n"); return h; }
+
+    if (strcmp(p->password, pw) != 0) { printf("密码错误\n"); return h; }
+
+    *c = p; printf("登录成功\n"); return h;
+
+}
+
+void business_change_password(struct business* h, int id) {
+
+    struct business* p = business_search(h, id); if (!p) return;
+
+    char o[NAME_LEN], n[NAME_LEN];
+
+    printf("旧 新："); scanf("%31s %31s", o, n);
+
+    if (strcmp(p->password, o) != 0) { printf("旧密码错误\n"); return; }
+
+    if (!pwd_strength_ok(n)) { printf("新密码强度不足\n"); return; }
+
+    strcpy(p->password, n);
+
+}
+
+void business_change_dish(struct business* h, int id) {
+
+    struct business* p = business_search(h, id); if (!p) return;
+
+    printf("新菜品数(1~%d)：", MAX_MENU); scanf("%d", &p->dish_count);
+
+    if (p->dish_count < 1 || p->dish_count > MAX_MENU) { printf("非法\n"); return; }
+
+    for (int i = 0; i < p->dish_count; i++) {
+
+        printf("第%d道 菜名 价格：", i + 1);
+
+        scanf("%31s %d", p->menu[i], &p->price[i]);
+
+    }
+
+    printf("菜单已更新\n");
+
+}
+
+struct business* business_delete(struct business* h, int id) {
+
+    struct business* p = h, * pre = NULL;
+
+    while (p) {
+
+        if (p->id == id) {
+
+            if (!pre) h = p->next; else pre->next = p->next;
+
+            free(p); printf("已删\n"); return h;
+
+        }
+
+        pre = p; p = p->next;
+
+    }
+
+    printf("未找到\n"); return h;
+
+}
+
+struct business* business_search(struct business* h, int id) {
+
+    for (struct business* p = h; p; p = p->next)
+
+        if (p->id == id) return p;
+
+    return NULL;
+
+}
+
+void business_print(struct business* h) {
+
+    if (!h) { printf("无\n"); return; }
+
+    for (struct business* p = h; p; p = p->next) {
+
+        printf("%d\t%s\t%s  菜单:", p->id, p->name, p->location);
+
+        for (int i = 0; i < p->dish_count; i++)
+
+            printf("[%s %d元] ", p->menu[i], p->price[i]);
+
+        printf("\n");
+
+    }
+
+}
+
+void business_save(struct business* h) {
+
+    FILE* fp = fopen("business_text.text", "w"); if (!fp) return;
+
+    for (struct business* p = h; p; p = p->next) {
+
+        fprintf(fp, "%d %s %s %s %d", p->id, p->password, p->name, p->location, p->dish_count);
+
+        for (int i = 0; i < p->dish_count; i++)
+
+            fprintf(fp, " %s %d", p->menu[i], p->price[i]);
+
+        fprintf(fp, "\n");
+
+    }
+
+    fclose(fp);
+
+}
+
+void business_free(struct business* h) {
+
+    while (h) { struct business* t = h; h = h->next; free(t); }
+
+}
+
+
+void rider_create(struct rider** h) {
+
+    FILE* fp = fopen("rider_text.text", "r"); if (!fp) { *h = NULL; return; }
+
+    struct rider* rear = NULL, * p;
+
+    while (1) {
+
+        p = (struct rider*)malloc(sizeof(struct rider));
+
+        if (!p) { fclose(fp); exit(1); }
+
+        if (fscanf(fp, "%d %31s %31s %31s %31s %d %d",
+
+            &p->id, p->password, p->name, p->phone, p->area,
+
+            &p->busy, &p->task_count) != 7) {
+
+            free(p); break;
+
+        }
+
+        p->next = NULL;
+
+        if (!*h) *h = rear = p; else rear->next = p, rear = p;
+
+    }
+
+    fclose(fp);
+
+}
+
+struct rider* rider_register(struct rider* h) {
+
+    struct rider* p = (struct rider*)malloc(sizeof(struct rider));
+
+    if (!p) return h;
+
+    printf("编号 姓名 电话 区域 状态(0闲1忙) 密码：");
+
+    scanf("%d %31s %31s %31s %d %31s",
+
+        &p->id, p->name, p->phone, p->area, &p->busy, p->password);
+
+    p->task_count = 0;
+
+    for (struct rider* q = h; q; q = q->next)
+
+        if (q->id == p->id) { printf("编号已存在\n"); free(p); return h; }
+
+    if (!pwd_strength_ok(p->password)) {
+
+        printf("密码强度不足\n"); free(p); return h;
+
+    }
+
+    p->next = NULL;
+
+    if (!h) h = p; else { struct rider* r = h; while (r->next) r = r->next; r->next = p; }
+
+    printf("注册成功\n"); return h;
+
+}
+
+struct rider* rider_login(struct rider* h, struct rider** c) {
+
+    int id; char pw[NAME_LEN];
+
+    printf("编号 密码："); scanf("%d %31s", &id, pw);
+
+    struct rider* p = rider_search(h, id);
+
+    if (!p) { printf("不存在\n"); return h; }
+
+    if (strcmp(p->password, pw) != 0) { printf("密码错误\n"); return h; }
+
+    *c = p; printf("登录成功\n"); return h;
+
+}
+
+void rider_change_password(struct rider* h, int id) {
+
+    struct rider* p = rider_search(h, id); if (!p) return;
+
+    char o[NAME_LEN], n[NAME_LEN];
+
+    printf("旧 新："); scanf("%31s %31s", o, n);
+
+    if (strcmp(p->password, o) != 0) { printf("旧密码错误\n"); return; }
+
+    if (!pwd_strength_ok(n)) { printf("新密码强度不足\n"); return; }
+
+    strcpy(p->password, n);
+
+}
+
+struct rider* rider_delete(struct rider* h, int id) {
+
+    struct rider* p = h, * pre = NULL;
+
+    while (p) {
+
+        if (p->id == id) {
+
+            if (!pre) h = p->next; else pre->next = p->next;
+
+            free(p); printf("已删\n"); return h;
+
+        }
+
+        pre = p; p = p->next;
+
+    }
+
+    printf("未找到\n"); return h;
+
+}
+
+struct rider* rider_search(struct rider* h, int id) {
+
+    for (struct rider* p = h; p; p = p->next)
+
+        if (p->id == id) return p;
+
+    return NULL;
+
+}
+
+void rider_print(struct rider* h) {
+
+    if (!h) { printf("无\n"); return; }
+
+    for (struct rider* p = h; p; p = p->next)
+
+        printf("%d\t%s\t%s\t%s\t%s\t%d\n",
+
+            p->id, p->name, p->phone, p->area,
+
+            p->busy ? "忙" : "闲", p->task_count);
+
+}
+
+void rider_save(struct rider* h) {
+
+    FILE* fp = fopen("rider_text.text", "w"); if (!fp) return;
+
+    for (struct rider* p = h; p; p = p->next)
+
+        fprintf(fp, "%d %s %s %s %s %d %d\n",
+
+            p->id, p->password, p->name, p->phone, p->area,
+
+            p->busy, p->task_count);
+
+    fclose(fp);
+
+}
+
+void rider_free(struct rider* h) {
+
+    while (h) { struct rider* t = h; h = h->next; free(t); }
+
+}
+
+
+void order_create(struct order** head) {
+
+    FILE* fp = fopen("order_text.text", "r"); if (!fp) { *head = NULL; return; }
+
+    struct order* rear = NULL, * p;
+
+    while (1) {
+
+        p = (struct order*)malloc(sizeof(struct order));
+
+        if (!p) { fclose(fp); exit(1); }
+
+        if (fscanf(fp, "%d %d %31s %d %d %31s %31s %31s %199s %d %d",
+
+            &p->id, &p->price, p->dish, &p->business_id, &p->rider_id,
+
+            p->user, p->sp, p->ep, p->route, &p->distance, &p->finished) != 11) {
+
+            free(p); break;
+
+        }
+
+        p->next = NULL;
+
+        if (!*head) *head = rear = p; else rear->next = p, rear = p;
+
+    }
+
+    fclose(fp);
+
+}
+
+void order_save(struct order* h) {
+
+    FILE* fp = fopen("order_text.text", "w"); if (!fp) return;
+
+    for (struct order* p = h; p; p = p->next)
+
+        fprintf(fp, "%d %d %s %d %d %s %s %s %s %d %d\n",
+
+            p->id, p->price, p->dish, p->business_id, p->rider_id,
+
+            p->user, p->sp, p->ep, p->route, p->distance, p->finished);
+
+    fclose(fp);
+
+}
+
+void order_free(struct order* h) {
+
+    while (h) { struct order* t = h; h = h->next; free(t); }
+
+}
+
+struct order* order_search(struct order* h, int id) {
+
+    for (struct order* p = h; p; p = p->next)
+
+        if (p->id == id) return p;
+
+    return NULL;
+
+}
+
+void order_print_all(struct order* h) {
+
+    if (!h) { printf("无\n"); return; }
+
+    printf("编号 价格 菜品 商家 骑手 起点->终点 路径 距离 用户 完成\n");
+
+    for (struct order* p = h; p; p = p->next)
+
+        printf("%d %d %s %d %d %s->%s [%s] %dkm %s %s\n",
+
+            p->id, p->price, p->dish, p->business_id, p->rider_id,
+
+            p->sp, p->ep, p->route, p->distance,
+
+            p->user, p->finished ? "是" : "否");
+
+}
+
+void order_print_by_user(struct order* h, const char* u) {
+
+    int n = 0;
+
+    for (struct order* p = h; p; p = p->next)
+
+        if (strcmp(p->user, u) == 0) {
+
+            printf("%d %d元 %s %s->%s [%s] %dkm %s\n",
+
+                p->id, p->price, p->dish, p->sp, p->ep,
+
+                p->route, p->distance, p->finished ? "✓已送达" : "派送中");
+
+            n++;
+
+        }
+
+    if (!n) printf("暂无订单\n");
+
+}
+
+void order_print_by_business(struct order* h, int bid) {
+
+    for (struct order* p = h; p; p = p->next)
+
+        if (p->business_id == bid)
+
+            printf("%d %d元 %s 用户:%s 骑手:%d %s->%s %s\n",
+
+                p->id, p->price, p->dish, p->user, p->rider_id,
+
+                p->sp, p->ep,
+
+                p->finished ? "✓已送达" : "派送中");
+
+}
+
+void order_print_by_rider(struct order* h, int rid) {
+
+    for (struct order* p = h; p; p = p->next)
+
+        if (p->rider_id == rid)
+
+            printf("%d %d元 %s 用户:%s %s->%s %s\n",
+
+                p->id, p->price, p->dish, p->user,
+
+                p->sp, p->ep,
+
+                p->finished ? "✓已完成" : "派送中");
+
+}
+
+struct order* order_delete(struct order* h, int id) {
+
+    struct order* p = h, * pre = NULL;
+
+    while (p) {
+
+        if (p->id == id) {
+
+            if (!pre) h = p->next; else pre->next = p->next;
+
+            free(p); printf("已删\n"); return h;
+
+        }
+
+        pre = p; p = p->next;
+
+    }
+
+    printf("未找到\n"); return h;
+
+}
+
+void order_finish(struct order* h, int id, struct rider* rhead) {
+
+    struct order* o = order_search(h, id);
+
+    if (!o) { printf("订单不存在\n"); return; }
+
+    if (o->finished) { printf("订单已完成\n"); return; }
+
+    if (o->rider_id == -1) { printf("订单未派单\n"); return; }
+
+    o->finished = 1;
+
+    struct rider* r = rider_search(rhead, o->rider_id);
+
+    if (r) {
+
+        if (r->task_count > 0) r->task_count--;
+
+        if (r->task_count <= 0) { r->busy = 0; r->task_count = 0; }
+
+    }
+
+    printf("订单 %d 已完成\n", id);
+
+}
+
+struct order* order_place(struct order* ohead, struct user* u,
+
+    struct business* bhead, struct rider* rhead)
+
+{
+
+    if (!bhead) { printf("暂无商家\n"); return ohead; }
+
+    printf("\n--- 商家 ---\n");
+
+    for (struct business* b = bhead; b; b = b->next)
+
+        printf("%d\t%s\t%s\n", b->id, b->name, b->location);
+
+    int bid; printf("选商家编号："); scanf("%d", &bid);
+
+    struct business* b = business_search(bhead, bid);
+
+    if (!b) { printf("商家不存在\n"); return ohead; }
+
+
+    printf("--- %s 菜单 ---\n", b->name);
+
+    for (int i = 0; i < b->dish_count; i++)
+
+        printf("%d. %s %d元\n", i + 1, b->menu[i], b->price[i]);
+
+    int ch; printf("点菜编号："); scanf("%d", &ch);
+
+    if (ch < 1 || ch > b->dish_count) { printf("无效选择\n"); return ohead; }
+
+    ch--;
+
+
+    struct order* p = (struct order*)malloc(sizeof(struct order));
+
+    if (!p) return ohead;
+
+    printf("订单编号："); scanf("%d", &p->id);
+
+    for (struct order* q = ohead; q; q = q->next)
+
+        if (q->id == p->id) { printf("订单编号已存在\n"); free(p); return ohead; }
+
+
+    strcpy(p->dish, b->menu[ch]);
+
+    p->price = b->price[ch];
+
+    p->business_id = b->id;
+
+    p->rider_id = -1;
+
+    strcpy(p->user, u->username);
+
+    strcpy(p->sp, b->location);
+
+    strcpy(p->ep, u->address);
+
+    strcpy(p->route, "无路径");
+
+    p->distance = -1;
+
+    p->finished = 0;
+
+    p->next = NULL;
+
+
+    int d = -1; char path[200];
+
+    if (map_dijkstra(&g_map, p->sp, p->ep, path, sizeof(path), &d) == 0) {
+
+        strcpy(p->route, path); p->distance = d;
+
+        printf("配送路径：%s  距离 %d km\n", path, d);
+
+    }
+    else {
+
+        printf("地图无路径 [%s] -> [%s]，请管理员补充路线后再下单\n", p->sp, p->ep);
+
+    }
+
+
+    if (!ohead) ohead = p;
+
+    else { struct order* r = ohead; while (r->next) r = r->next; r->next = p; }
+
+
+    int rid = dispatch(p, rhead);
+
+    if (rid >= 0) printf("已派单骑手 #%d\n", rid);
+
+    else         printf("暂无可用骑手\n");
+
+
+    printf("下单成功 订单编号 %d\n", p->id);
+
+    return ohead;
+
+}
+
+int dispatch(struct order* o, struct rider* rhead) {
+
+    if (!rhead) return -1;
+
+    struct rider* pick = NULL;
+
+    /* 优先：同区域 + 闲 */
+
+    for (struct rider* r = rhead; r; r = r->next)
+
+        if (r->busy == 0 && strcmp(r->area, o->ep) == 0)
+
+            if (!pick || r->task_count < pick->task_count) pick = r;
+
+    /* 次选：任意闲 */
+
+    if (!pick)
+
+        for (struct rider* r = rhead; r; r = r->next)
+
+            if (r->busy == 0)
+
+                if (!pick || r->task_count < pick->task_count) pick = r;
+
+    if (!pick) return -1;
+
+    pick->busy = 1; pick->task_count++;
+
+    o->rider_id = pick->id;
+
+    return pick->id;
+
+}
